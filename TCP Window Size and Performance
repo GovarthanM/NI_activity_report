@@ -1,0 +1,95 @@
+import subprocess
+import os
+import csv
+from time import sleep
+
+# Define test parameters
+server_ip = "127.0.0.1"  # Replace with your iperf3 server's IP address
+window_sizes = ["64K", "128K", "256K", "512K", "1M"]  # TCP window sizes to test
+bandwidth_conditions = ["10M", "50M", "100M"]  # Bandwidth limits
+delay_conditions = [0, 50, 100]  # Delays in milliseconds
+
+# Output file to store results
+output_file = "tcp_performance_results.csv"
+
+# Ensure iperf3 is running as a server
+def start_iperf3_server():
+    print("Starting iperf3 server...")
+    subprocess.Popen(["iperf3", "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sleep(2)  # Allow the server to start
+
+# Stop iperf3 server
+def stop_iperf3_server():
+    print("Stopping iperf3 server...")
+    os.system("pkill iperf3")
+
+# Run iperf3 client with specific parameters
+def run_iperf3_client(window_size, bandwidth, delay):
+    print(f"Testing: Window={window_size}, Bandwidth={bandwidth}, Delay={delay}ms")
+    
+    # Add artificial delay using `tc` command (Linux specific)
+    if delay > 0:
+        os.system(f"tc qdisc add dev lo root netem delay {delay}ms")
+    
+    # Run iperf3 with specified parameters
+    command = [
+        "iperf3",
+        "-c", server_ip,
+        "-w", window_size,
+        "-b", bandwidth,
+        "-t", "10",  # Test duration in seconds
+        "-J"  # JSON output for easier parsing
+    ]
+    
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    
+    # Remove artificial delay after the test
+    if delay > 0:
+        os.system("tc qdisc del dev lo root netem")
+    
+    return result.stdout
+
+# Parse results and extract metrics
+def parse_results(result_json):
+    import json
+    try:
+        result = json.loads(result_json)
+        throughput = result["end"]["sum_received"]["bits_per_second"] / 1e6  # Convert to Mbps
+        latency = result["end"]["streams"][0]["sender"]["jitter_ms"]  # Extract jitter as a proxy for latency
+        return throughput, latency
+    except Exception as e:
+        print(f"Error parsing results: {e}")
+        return None, None
+
+# Write results to CSV
+def write_to_csv(filename, data):
+    header = ["Window Size", "Bandwidth", "Delay (ms)", "Throughput (Mbps)", "Latency (ms)"]
+    with open(filename, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(header)
+        writer.writerows(data)
+
+# Main function to conduct the experiment
+def main():
+    # Start iperf3 server
+    start_iperf3_server()
+    
+    results = []
+    try:
+        for window in window_sizes:
+            for bandwidth in bandwidth_conditions:
+                for delay in delay_conditions:
+                    result_json = run_iperf3_client(window, bandwidth, delay)
+                    throughput, latency = parse_results(result_json)
+                    if throughput is not None and latency is not None:
+                        results.append([window, bandwidth, delay, throughput, latency])
+    finally:
+        # Stop iperf3 server
+        stop_iperf3_server()
+    
+    # Write results to CSV
+    write_to_csv(output_file, results)
+    print(f"Results saved to {output_file}")
+
+if __name__ == "__main__":
+    main()
